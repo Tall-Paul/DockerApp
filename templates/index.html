@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Docker Containers</title>
+    <style>
+        body { font-family: sans-serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .container-row { cursor: pointer; }
+        .volume-row { display: none; }
+        .volume-list { margin: 0; padding-left: 20px; }
+        .replication-form { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Running Containers</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Select</th>
+                <th>ID</th>
+                <th>Names</th>
+                <th>Image</th>
+                <th>State</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .}}
+            <tr class="container-row" onclick="toggleVolumes('{{.ID}}')">
+                <td><input type="checkbox" onchange="selectItem(event, 'container', '{{.ID}}', '')" {{if .IsSelected}}checked{{end}}></td>
+                <td>{{.ID | printf "%.12s"}}</td>
+                <td>{{range .Names}}{{.}}{{end}}</td>
+                <td>{{.Image}}</td>
+                <td>{{.State}}</td>
+                <td>{{.Status}}</td>
+            </tr>
+            <tr id="volumes-{{.ID}}" class="volume-row">
+                <td colspan="6">
+                    <strong>Volumes:</strong>
+                    {{if .Mounts}}
+                        <ul class="volume-list">
+                        {{range .Mounts}}
+                            <li>
+                                <input type="checkbox" onchange="selectItem(event, 'volume', '{{$.ID}}', '{{.Name}}')" {{if .IsSelected}}checked{{end}}>
+                                {{.Source}} -> {{.Destination}} (Name: {{.Name}})
+                            </li>
+                        {{end}}
+                        </ul>
+                    {{else}}
+                        <span>No volumes attached.</span>
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+
+    <div class="replication-form">
+        <h2>Replicate to another host</h2>
+        <form id="replicationForm">
+            <div>
+                <label for="sourceHostAddress">Source Host Address for Health Check (e.g., http://1.2.3.4:8080):</label>
+                <input type="text" id="sourceHostAddress" name="sourceHostAddress" size="60">
+            </div>
+            <div style="margin-top: 10px;">
+                <label for="destHost">Destination Docker Host (e.g., tcp://5.6.7.8:2375):</label>
+                <input type="text" id="destHost" name="destHost" size="60">
+            </div>
+            <button type="submit" style="margin-top: 10px;">Replicate and Deploy Monitor</button>
+        </form>
+    </div>
+
+    <script>
+        function toggleVolumes(containerId) {
+            if (event.target.type === 'checkbox') {
+                return;
+            }
+            var volumeRow = document.getElementById('volumes-' + containerId);
+            if (volumeRow.style.display === 'none') {
+                volumeRow.style.display = 'table-row';
+            } else {
+                volumeRow.style.display = 'none';
+            }
+        }
+
+        function selectItem(event, type, containerId, volumeName) {
+            event.stopPropagation();
+            const isSelected = event.target.checked;
+            fetch('/select', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    type: type,
+                    id: containerId,
+                    name: volumeName,
+                    isSelected: isSelected,
+                }),
+            })
+            .then(response => {
+                if (!response.ok) {
+                    alert('Failed to update selection.');
+                }
+            });
+        }
+
+        document.getElementById('replicationForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const destHost = document.getElementById('destHost').value;
+            const sourceHostAddress = document.getElementById('sourceHostAddress').value;
+
+            if (!destHost || !sourceHostAddress) {
+                alert('Please enter both source and destination host addresses.');
+                return;
+            }
+            
+            fetch('/replicate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    destinationHost: destHost,
+                    sourceHostAddress: sourceHostAddress,
+                }),
+            })
+            .then(response => {
+                if (response.ok) {
+                    alert('Replication process started!');
+                } else {
+                    response.text().then(text => alert('Replication failed: ' + text));
+                }
+            });
+        });
+    </script>
+</body>
+</html>
