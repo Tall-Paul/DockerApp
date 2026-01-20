@@ -7,11 +7,11 @@ WORKDIR /app
 # Copy the go.mod file
 COPY go.mod ./
 
-# Download dependencies
-RUN go mod download
-
 # Copy the entire source code
 COPY . .
+
+# Download dependencies
+RUN go mod download
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o docker-lister .
