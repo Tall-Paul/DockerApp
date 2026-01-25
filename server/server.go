@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
@@ -286,7 +287,9 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 			containerName = strings.TrimPrefix(srcCont.Name, "/")
 		}
 
-		createdCont, err := destCli.ContainerCreate(ctx, srcCont.Config, srcCont.HostConfig, srcCont.NetworkSettings.Networks, nil, containerName)
+		createdCont, err := destCli.ContainerCreate(ctx, srcCont.Config, srcCont.HostConfig, &network.NetworkingConfig{
+			EndpointsConfig: srcCont.NetworkSettings.Networks,
+		}, nil, containerName)
 		if err != nil {
 			log.Printf("Failed to create container %s on destination: %s", containerName, err)
 			continue
@@ -336,7 +339,7 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 // --- Data structures for the template ---
 
 type MountInfo struct {
-	mount.MountPoint
+	types.MountPoint
 	IsSelected bool
 }
 

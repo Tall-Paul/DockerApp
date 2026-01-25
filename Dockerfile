@@ -1,11 +1,14 @@
 # Use the official Golang image to build the application
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies for CGO and SQLite
+RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 # Set the working directory
 WORKDIR /app
 
-# Copy the go.mod file
-COPY go.mod ./
+# Copy go.mod and go.sum for dependency resolution
+COPY go.mod go.sum ./
 
 # Copy the entire source code
 COPY . .
@@ -13,8 +16,8 @@ COPY . .
 # Download dependencies
 RUN go mod download
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o docker-lister .
+# Build the application with CGO enabled for SQLite support
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o docker-lister .
 
 # Use a minimal base image for the final image
 FROM alpine:latest
