@@ -15,11 +15,9 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 )
 
 // Server holds the dependencies for the web server.
@@ -37,6 +35,11 @@ func (s *Server) Run() {
 	http.HandleFunc("/", s.handleListContainers)
 	http.HandleFunc("/select", s.handleSelect)
 	http.HandleFunc("/replicate", s.handleReplicate)
+
+	// Destination API endpoints
+	http.HandleFunc("/api/pull-image", s.handlePullImage)
+	http.HandleFunc("/api/create-container", s.handleCreateContainer)
+	http.HandleFunc("/api/create-volume", s.handleCreateVolume)
 
 	fmt.Println("Starting server on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -153,6 +156,156 @@ func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// Destination API: Pull an image
+func (s *Server) handlePullImage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		ImageName string `json:"imageName"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Pulling image: %s", payload.ImageName)
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("ERROR: Unable to create docker client: %s", err)
+		http.Error(w, fmt.Sprintf("Unable to create docker client: %s", err), http.StatusInternalServerError)
+		return
+	}
+	defer cli.Close()
+
+	out, err := cli.ImagePull(context.Background(), payload.ImageName, image.PullOptions{})
+	if err != nil {
+		log.Printf("ERROR: Failed to pull image %s: %s", payload.ImageName, err)
+		http.Error(w, fmt.Sprintf("Failed to pull image: %s", err), http.StatusInternalServerError)
+		return
+	}
+	io.Copy(io.Discard, out)
+	out.Close()
+
+	log.Printf("Successfully pulled image: %s", payload.ImageName)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+}
+
+// Destination API: Create a container
+func (s *Server) handleCreateContainer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		Name          string                      `json:"name"`
+		Config        *container.Config           `json:"config"`
+		HostConfig    *container.HostConfig       `json:"hostConfig"`
+		NetworkConfig *network.NetworkingConfig   `json:"networkConfig"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("ERROR: Invalid request body: %s", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Creating container: %s", payload.Name)
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("ERROR: Unable to create docker client: %s", err)
+		http.Error(w, fmt.Sprintf("Unable to create docker client: %s", err), http.StatusInternalServerError)
+		return
+	}
+	defer cli.Close()
+
+	createdCont, err := cli.ContainerCreate(
+		context.Background(),
+		payload.Config,
+		payload.HostConfig,
+		payload.NetworkConfig,
+		nil,
+		payload.Name,
+	)
+	if err != nil {
+		log.Printf("ERROR: Failed to create container %s: %s", payload.Name, err)
+		http.Error(w, fmt.Sprintf("Failed to create container: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully created container: %s (ID: %s)", payload.Name, createdCont.ID)
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":      "success",
+		"containerID": createdCont.ID,
+	})
+}
+
+// Destination API: Create a volume
+func (s *Server) handleCreateVolume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		Name       string            `json:"name"`
+		Driver     string            `json:"driver"`
+		DriverOpts map[string]string `json:"driverOpts"`
+		Labels     map[string]string `json:"labels"`
+		VolumeData []byte            `json:"volumeData"` // Base64 encoded tar.gz
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("ERROR: Invalid request body: %s", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Creating volume: %s", payload.Name)
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Printf("ERROR: Unable to create docker client: %s", err)
+		http.Error(w, fmt.Sprintf("Unable to create docker client: %s", err), http.StatusInternalServerError)
+		return
+	}
+	defer cli.Close()
+
+	ctx := context.Background()
+
+	// Create the volume
+	vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
+		Name:       payload.Name,
+		Driver:     payload.Driver,
+		DriverOpts: payload.DriverOpts,
+		Labels:     payload.Labels,
+	})
+	if err != nil {
+		log.Printf("ERROR: Failed to create volume %s: %s", payload.Name, err)
+		http.Error(w, fmt.Sprintf("Failed to create volume: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully created volume: %s", vol.Name)
+
+	// TODO: If volumeData is provided, populate the volume
+	// This would require creating a temporary container to extract the data
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":     "success",
+		"volumeName": vol.Name,
+	})
+}
+
 func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
@@ -160,7 +313,7 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var payload struct {
-		DestinationHost   string `json:"destinationHost"`
+		DestinationURL    string `json:"destinationHost"` // URL of destination app (e.g., http://5.6.7.8:8080)
 		SourceHostAddress string `json:"sourceHostAddress"`
 	}
 
@@ -169,49 +322,40 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.DestinationHost == "" || payload.SourceHostAddress == "" {
+	if payload.DestinationURL == "" || payload.SourceHostAddress == "" {
 		http.Error(w, "Destination and source host addresses cannot be empty", http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("Replication started for destination: %s", payload.DestinationHost)
+	log.Printf("Replication started for destination: %s", payload.DestinationURL)
 
-	destURL, err := url.Parse(payload.DestinationHost)
-	if err != nil {
-		http.Error(w, "Invalid destination host URL", http.StatusBadRequest)
-		return
-	}
-	destHost := destURL.Hostname()
-
+	// Get source Docker client
 	srcCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
+		log.Printf("ERROR: Unable to create source docker client: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to create source docker client: %s", err), http.StatusInternalServerError)
 		return
 	}
 	defer srcCli.Close()
 
-	destCli, err := client.NewClientWithOpts(client.WithHost(payload.DestinationHost), client.WithAPIVersionNegotiation())
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Unable to create destination docker client: %s", err), http.StatusInternalServerError)
-		return
-	}
-	defer destCli.Close()
-
+	// Get selected items from store
 	selectedContainers, err := s.store.GetSelectedContainers()
 	if err != nil {
+		log.Printf("ERROR: Unable to get selected containers: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to get selected containers: %s", err), http.StatusInternalServerError)
 		return
 	}
 	selectedVolumes, err := s.store.GetSelectedVolumes()
 	if err != nil {
+		log.Printf("ERROR: Unable to get selected volumes: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to get selected volumes: %s", err), http.StatusInternalServerError)
 		return
 	}
 
 	ctx := context.Background()
+	httpClient := &http.Client{}
 
-	// --- Volume Replication ---
-	const transferPort = "9876/tcp"
+	// --- Volume Replication via API ---
 	for volName := range selectedVolumes {
 		log.Printf("Replicating volume: %s", volName)
 		srcVol, err := srcCli.VolumeInspect(ctx, volName)
@@ -220,76 +364,30 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		destVol, err := destCli.VolumeCreate(ctx, volume.CreateOptions{
-			Name:       srcVol.Name,
-			Labels:     srcVol.Labels,
-			Driver:     srcVol.Driver,
-			DriverOpts: srcVol.Options,
-		})
+		// Call destination app's API to create volume
+		volPayload := map[string]interface{}{
+			"name":       srcVol.Name,
+			"driver":     srcVol.Driver,
+			"driverOpts": srcVol.Options,
+			"labels":     srcVol.Labels,
+		}
+		jsonData, _ := json.Marshal(volPayload)
+		resp, err := httpClient.Post(payload.DestinationURL+"/api/create-volume", "application/json", strings.NewReader(string(jsonData)))
 		if err != nil {
-			log.Printf("Failed to create destination volume %s: %s", volName, err)
+			log.Printf("Failed to create volume %s on destination: %s", volName, err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Failed to create volume %s on destination: HTTP %d", volName, resp.StatusCode)
 			continue
 		}
 
-		receiverCmd := fmt.Sprintf("nc -l -p %s | tar -xzf - -C /volume_data", strings.Split(transferPort, "/")[0])
-		receiverPort, _ := nat.NewPort("tcp", strings.Split(transferPort, "/")[0])
-
-		receiverCont, err := destCli.ContainerCreate(ctx, &container.Config{
-			Image:        "alpine",
-			Cmd:          []string{"sh", "-c", "apk add --no-cache netcat-openbsd && " + receiverCmd},
-			ExposedPorts: nat.PortSet{receiverPort: struct{}{}},
-		}, &container.HostConfig{
-			Mounts: []mount.Mount{
-				{Type: mount.TypeVolume, Source: destVol.Name, Target: "/volume_data"},
-			},
-			PortBindings: nat.PortMap{
-				receiverPort: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: strings.Split(transferPort, "/")[0]}},
-			},
-		}, nil, nil, "volume_receiver_"+volName)
-		if err != nil {
-			log.Printf("Failed to create receiver container for volume %s: %s", volName, err)
-			continue
-		}
-		defer destCli.ContainerRemove(ctx, receiverCont.ID, container.RemoveOptions{Force: true})
-
-		if err = destCli.ContainerStart(ctx, receiverCont.ID, container.StartOptions{}); err != nil {
-			log.Printf("Failed to start receiver container for volume %s: %s", volName, err)
-			continue
-		}
-
-		senderCmd := fmt.Sprintf("tar -czf - -C /volume_data . | nc %s %s", destHost, strings.Split(transferPort, "/")[0])
-		senderCont, err := srcCli.ContainerCreate(ctx, &container.Config{
-			Image: "alpine",
-			Cmd:   []string{"sh", "-c", "apk add --no-cache netcat-openbsd && " + senderCmd},
-		}, &container.HostConfig{
-			Mounts: []mount.Mount{
-				{Type: mount.TypeVolume, Source: srcVol.Name, Target: "/volume_data"},
-			},
-		}, nil, nil, "volume_sender_"+volName)
-		if err != nil {
-			log.Printf("Failed to create sender container for volume %s: %s", volName, err)
-			continue
-		}
-		defer srcCli.ContainerRemove(ctx, senderCont.ID, container.RemoveOptions{Force: true})
-
-		if err = srcCli.ContainerStart(ctx, senderCont.ID, container.StartOptions{}); err != nil {
-			log.Printf("Failed to start sender container for volume %s: %s", volName, err)
-			continue
-		}
-
-		log.Printf("Waiting for volume transfer to complete for %s...", volName)
-		statusCh, errCh := srcCli.ContainerWait(ctx, senderCont.ID, container.WaitConditionNotRunning)
-		select {
-		case status := <-statusCh:
-			log.Printf("Sender container for %s exited with status %d", volName, status.StatusCode)
-		case err := <-errCh:
-			log.Printf("Error waiting for sender container %s: %s", volName, err)
-		}
-		log.Printf("Volume transfer for %s complete.", volName)
+		log.Printf("Successfully replicated volume: %s", volName)
 	}
 
-	// --- Container Replication ---
-	var replicatedContainerIDs []string
+	// --- Container Replication via API ---
 	for containerID := range selectedContainers {
 		log.Printf("Replicating container: %s", containerID)
 		srcCont, err := srcCli.ContainerInspect(ctx, containerID)
@@ -298,57 +396,47 @@ func (s *Server) handleReplicate(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		out, err := destCli.ImagePull(ctx, srcCont.Config.Image, image.PullOptions{})
+		// Call destination app's API to pull image
+		imgPayload := map[string]string{"imageName": srcCont.Config.Image}
+		jsonData, _ := json.Marshal(imgPayload)
+		resp, err := httpClient.Post(payload.DestinationURL+"/api/pull-image", "application/json", strings.NewReader(string(jsonData)))
 		if err != nil {
 			log.Printf("Failed to pull image %s on destination: %s", srcCont.Config.Image, err)
 			continue
 		}
-		io.Copy(io.Discard, out)
-		out.Close()
+		resp.Body.Close()
 
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Failed to pull image %s on destination: HTTP %d", srcCont.Config.Image, resp.StatusCode)
+			continue
+		}
+
+		// Call destination app's API to create container
 		var containerName string
 		if len(srcCont.Name) > 1 {
 			containerName = strings.TrimPrefix(srcCont.Name, "/")
 		}
 
-		createdCont, err := destCli.ContainerCreate(ctx, srcCont.Config, srcCont.HostConfig, &network.NetworkingConfig{
-			EndpointsConfig: srcCont.NetworkSettings.Networks,
-		}, nil, containerName)
+		contPayload := map[string]interface{}{
+			"name":          containerName,
+			"config":        srcCont.Config,
+			"hostConfig":    srcCont.HostConfig,
+			"networkConfig": &network.NetworkingConfig{EndpointsConfig: srcCont.NetworkSettings.Networks},
+		}
+		jsonData, _ = json.Marshal(contPayload)
+		resp, err = httpClient.Post(payload.DestinationURL+"/api/create-container", "application/json", strings.NewReader(string(jsonData)))
 		if err != nil {
 			log.Printf("Failed to create container %s on destination: %s", containerName, err)
 			continue
 		}
-		replicatedContainerIDs = append(replicatedContainerIDs, createdCont.ID)
-	}
+		resp.Body.Close()
 
-	// --- Deploy Monitor Container ---
-	if len(replicatedContainerIDs) > 0 {
-		log.Println("Deploying monitor container to destination host...")
-		monitorContainerName := "dockerapp-monitor"
-		_ = destCli.ContainerRemove(ctx, monitorContainerName, container.RemoveOptions{Force: true})
-
-		monitorCont, err := destCli.ContainerCreate(ctx, &container.Config{
-			Image: "docker-lister",
-			Cmd:   []string{"./docker-lister", "-mode=monitor"},
-			Env: []string{
-				"PRIMARY_HOST_ADDR=" + payload.SourceHostAddress,
-				"REPLICATED_CONTAINER_IDS=" + strings.Join(replicatedContainerIDs, ","),
-			},
-		}, &container.HostConfig{
-			Mounts: []mount.Mount{
-				{Type: mount.TypeBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
-			},
-		}, nil, nil, monitorContainerName)
-
-		if err != nil {
-			log.Printf("Failed to create monitor container: %s", err)
-		} else {
-			if err := destCli.ContainerStart(ctx, monitorCont.ID, container.StartOptions{}); err != nil {
-				log.Printf("Failed to start monitor container: %s", err)
-			} else {
-				log.Println("Successfully deployed and started monitor container.")
-			}
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Failed to create container %s on destination: HTTP %d", containerName, resp.StatusCode)
+			continue
 		}
+
+		log.Printf("Successfully replicated container: %s", containerName)
 	}
 
 	log.Println("Replication process finished.")
