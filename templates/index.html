@@ -28,6 +28,7 @@
         </thead>
         <tbody>
             {{range .}}
+            {{$containerID := .ID}}
             <tr class="container-row" onclick="toggleVolumes('{{.ID}}')">
                 <td><input type="checkbox" onchange="selectItem(event, 'container', '{{.ID}}', '')" {{if .IsSelected}}checked{{end}}></td>
                 <td>{{.ID | printf "%.12s"}}</td>
@@ -43,7 +44,7 @@
                         <ul class="volume-list">
                         {{range .Mounts}}
                             <li>
-                                <input type="checkbox" onchange="selectItem(event, 'volume', '{{$.ID}}', '{{.Name}}')" {{if .IsSelected}}checked{{end}}>
+                                <input type="checkbox" onchange="selectItem(event, 'volume', '{{$containerID}}', '{{.Name}}')" {{if .IsSelected}}checked{{end}}>
                                 {{.Source}} -> {{.Destination}} (Name: {{.Name}})
                             </li>
                         {{end}}

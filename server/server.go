@@ -47,28 +47,47 @@ func (s *Server) Run() {
 func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
+		log.Printf("ERROR: Unable to create docker client: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to create docker client: %s", err), http.StatusInternalServerError)
 		return
 	}
 	defer cli.Close()
 
+	// Log Docker host and version info
+	info, err := cli.Info(context.Background())
+	if err != nil {
+		log.Printf("ERROR: Unable to get Docker info: %s", err)
+	} else {
+		log.Printf("Connected to Docker daemon. Containers: %d, Images: %d", info.Containers, info.Images)
+	}
+
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
 	if err != nil {
+		log.Printf("ERROR: Unable to list containers: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to list containers: %s", err), http.StatusInternalServerError)
 		return
 	}
 
+	log.Printf("Successfully listed %d containers", len(containers))
+	for i, c := range containers {
+		log.Printf("Container %d: ID=%s, Names=%v, Image=%s", i, c.ID[:12], c.Names, c.Image)
+	}
+
 	selectedContainers, err := s.store.GetSelectedContainers()
 	if err != nil {
+		log.Printf("ERROR: Unable to get selected containers: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to get selected containers: %s", err), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Retrieved %d selected containers from store", len(selectedContainers))
 
 	selectedVolumes, err := s.store.GetSelectedVolumes()
 	if err != nil {
+		log.Printf("ERROR: Unable to get selected volumes: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to get selected volumes: %s", err), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Retrieved %d selected volumes from store", len(selectedVolumes))
 
 	var containerInfos []ContainerInfo
 	for _, c := range containers {
@@ -89,18 +108,23 @@ func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
 			IsSelected: selectedContainers[c.ID],
 		})
 	}
+	log.Printf("Built %d containerInfos for template", len(containerInfos))
 
 	tmpl, err := template.ParseFiles("templates/index.html")
 	if err != nil {
+		log.Printf("ERROR: Unable to parse template: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to parse template: %s", err), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Template parsed successfully")
 
 	err = tmpl.Execute(w, containerInfos)
 	if err != nil {
+		log.Printf("ERROR: Unable to execute template: %s", err)
 		http.Error(w, fmt.Sprintf("Unable to execute template: %s", err), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("Template executed successfully")
 }
 
 func (s *Server) handleSelect(w http.ResponseWriter, r *http.Request) {

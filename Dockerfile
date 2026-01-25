@@ -22,6 +22,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o docker-lister .
 # Use a minimal base image for the final image
 FROM alpine:latest
 
+# Install runtime dependencies for SQLite
+RUN apk add --no-cache sqlite-libs
+
 # Set the working directory
 WORKDIR /root/
 
